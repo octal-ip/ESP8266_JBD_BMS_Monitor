@@ -23,3 +23,13 @@ This project provides Platform.io code for building an ESP8266 based monitor for
 
 ### The Bluetooth module, STM32 multiplexer and ESP8266 side-by-side
 ![BT STM32 and ESP8266](https://raw.githubusercontent.com/octal-ip/ESP8266_JBD_BMS_Monitor/main/pics/STM32_BT_ESP8266.jpg "BT STM32 and ESP8266")
+
+
+### Credits:
+[RobTillaart for RunningAverage](https://github.com/RobTillaart/RunningAverage)
+
+[JAndrassy for TelnetStream](https://github.com/jandrassy/TelnetStream)
+
+[Peter Lerup for ESPSoftSerial](https://github.com/plerup/espsoftwareserial)
+
+[Bodmer for TFT_eSPI](https://github.com/Bodmer/TFT_eSPI)
