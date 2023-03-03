@@ -14,3 +14,12 @@ This project provides Platform.io code for building an ESP8266 based monitor for
 - This is designed to work in conjunction with my UART multiplexer, allowing simultaneous Bluetooth connectivity and ESP monitoring: https://github.com/octal-ip/STM32_JBD_UART_Mux
 - The code includes TelnetPrint, which can be used to view realtime statistics through telnet port 23 of the ESP.
 - SoftwareSerial is implemented for the interface to the JBD BMS on ports D1 (TX) and D2 (RX), leaving the hardware serial available for debugging.
+
+### TFT Statistics
+![BMS_TFT](https://raw.githubusercontent.com/octal-ip/ESP8266_JBD_BMS_Monitor/main/pics/BMS_TFT.jpg "BMS TFT")
+
+### Grafana Output
+![Grafana statistics](https://raw.githubusercontent.com/octal-ip/ESP8266_JBD_BMS_Monitor/main/pics/JBD_Grafana.png "Grafana statistics")
+
+### The Bluetooth module, STM32 multiplexer and ESP8266 side-by-side
+![BT STM32 and ESP8266](https://raw.githubusercontent.com/octal-ip/ESP8266_JBD_BMS_Monitor/main/pics/STM32_BT_ESP8266.jpg "BT STM32 and ESP8266")
