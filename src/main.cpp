@@ -12,12 +12,17 @@
 #include <TelnetPrint.h>
 
 #ifdef TFT_ENABLE
-  #define ILI9341_DRIVER
-  #define TFT_CS   PIN_D8  // Chip select control pin D8
-  #define TFT_DC   PIN_D3  // Data Command control pin
-  #define TFT_RST -1//   // Connect to the ESP reset pin
-  #define SPI_FREQUENCY  40000000
-  #define SPI_READ_FREQUENCY  20000000
+  /* If the TFT is to be enabled:
+  - Uncomment the following line in .pio\libdeps\nodemcuv2\TFT_eSPI\User_Setup_Select.h
+      #include <User_Setups/Setup1_ILI9341.h>
+  - And ensure the following configuration is placed in .pio\libdeps\nodemcuv2\TFT_eSPI\User_Setups\Setup1_ILI9341.h
+      #define ILI9341_DRIVER
+      #define TFT_CS   PIN_D8  // Chip select control pin D8
+      #define TFT_DC   PIN_D3  // Data Command control pin
+      #define TFT_RST  -1    // Set TFT_RST to -1 if the display RESET is connected to NodeMCU RST or 3.3V
+      #define SPI_FREQUENCY  40000000
+      #define SPI_READ_FREQUENCY  20000000
+  */
   #define BLUE2RED 3
   #define GREEN2RED 4
   #define RED2GREEN 5
@@ -71,7 +76,7 @@ float cycles = 0.0;
 byte protectionStatus = 0;
 byte percentRem = 0;
 byte NTCs = 0;
-byte cells = 0;
+byte cells = 16; //Default to 16 cells. This will be automatically updated.
 byte cellCount = 0;
 float lowestCell = 0.0;
 float highestCell = 0.0;
@@ -492,7 +497,7 @@ void processPacket() //This function deciphers the BMS data.
   }
   
   checkSumCalc = 65536 - checkSumCalc;
-  checkSumData = (packetbuff[packetCount-3] << 8 | packetbuff[packetCount-2]); //Or the checksum bytes provided in the data packet together to find the total.
+  checkSumData = (packetbuff[packetCount-3] << 8 | packetbuff[packetCount-2]); //OR the checksum bytes provided in the data packet together to find the total.
   
   
   if (checkSumCalc == checkSumData) {
@@ -565,6 +570,15 @@ void processPacket() //This function deciphers the BMS data.
         postData(post);
       }
       
+      cells = packetbuff[25];
+      TelnetPrint.printf("Cells: %d \r\n", cells);
+      if (systemCycles >= avSamples) { //If we have enough samples added to the running average, send the data to InfluxDB.
+        dtostrf(cells, 1, 0, StatString);
+        sprintf(post, "Cells,sensor=bms value=%s", StatString);
+        postData(post);
+        systemCycles = 0;
+      }
+
       NTCs = packetbuff[26];
       TelnetPrint.printf("NTCs: %d \r\n", NTCs);
       if (systemCycles >= avSamples) { //If we have enough samples added to the running average, send the data to InfluxDB.
@@ -583,22 +597,13 @@ void processPacket() //This function deciphers the BMS data.
           }
       }
 
-      cells = packetbuff[25];
-      TelnetPrint.printf("Cells: %d \r\n", cells);
-      if (systemCycles >= avSamples) { //If we have enough samples added to the running average, send the data to InfluxDB.
-        dtostrf(cells, 1, 0, StatString);
-        sprintf(post, "Cells,sensor=bms value=%s", StatString);
-        postData(post);
-        systemCycles = 0;
-      }
-      
       TelnetPrint.println(); TelnetPrint.println();
       systemCycles++;
     }
 
     else if (packetbuff[1] == 0x4) {
       cellCount = (packetCount - 7)/2; // The number of cells is the size of the array in 16 bit pairs, minus header, footer and checksum.
-      TelnetPrint.printf("Number of cells: %d \r\n", cellCount);
+      TelnetPrint.printf("Calculated cell count: %d \r\n", cellCount);
       float cellVoltages[cellCount];
       lowestCell = 10.0;
       highestCell = 0.0;
@@ -654,6 +659,13 @@ void processPacket() //This function deciphers the BMS data.
 void receiveData() {
   if (JBDSoftSerial.available()) {
     incomingByte = JBDSoftSerial.read();
+	
+	//Receiving data requires a state machine to track the start of packet, packet type, reception in progress and reception completed.
+    // packetStatus = 0 means we're waiting for the start of a packet to arrive.
+    // packetStatus = 1 means that we've found what looks like a packet header, but need to confirm with the next byte.
+    // packetStatus = 2 means we've received a data packet containing system parameters (e.g. high temperature cut-off)
+    // packetStatus = 3 means we've received a system status packet
+    // packetStatus = 4 means we've received a battery status packet.
 
     //TelnetPrint.printf("Received: %X \r \n", incomingByte);
     if (incomingByte == 0xdd && packetStatus == 0) {
@@ -665,9 +677,12 @@ void receiveData() {
     else if (packetStatus == 1) {
       if (incomingByte >= 0x03 && incomingByte <= 0x29) {
         //TelnetPrint.printf("Start of packet found: %X \r \n", incomingByte);
-        if (incomingByte == 0x03 || incomingByte == 0x04) {
-          packetStatus = 3; //Start of system status or battery status packet confirmed.
+        if (incomingByte == 0x03) {
+          packetStatus = 3; //Start of system status packet confirmed.
         }
+        else if (incomingByte == 0x04) {
+          packetStatus = 4; //Start of battery status packet confirmed.
+		}
         else {
           packetStatus = 2; //Start of parameter packet confirmed.
         }
@@ -681,13 +696,13 @@ void receiveData() {
         //TelnetPrint.println(F("Not a status or parameter packet, ignoring."));
       }
     }
-    else if ((packetStatus == 2 && packetCount > 8) || (packetStatus == 3 && packetCount > 46)) { //If more than the expected number of bytes have been received, we must have missed the last byte of the packet. Restart.
+    else if ((packetStatus == 2 && packetCount > 8) || (packetStatus == 3 && packetCount > 42) || (packetStatus == 4 && packetCount > (2 * cells + 6))) { //If more than the expected number of bytes have been received, we must have missed the last byte of the packet. Restart.
       JBDSoftSerial.flush();
       packetStatus = 0;
       packetCount = 0;
       TelnetPrint.println(F("Too many bytes received - resetting."));
     }
-    else if ((incomingByte == 0x77 && packetStatus == 2 && packetCount == 8) || (incomingByte == 0x77 && packetStatus == 3 && packetCount > 34)) { //End of packet found. This can be a problem when cell voltage includes 0x77, e.g. is 3447 which is 0x0d 0x77
+    else if ((incomingByte == 0x77 && packetStatus == 2 && packetCount == 8) || (incomingByte == 0x77 && packetStatus == 3 && packetCount == 42) || (incomingByte == 0x77 && packetStatus == 4 && packetCount == (2 * cells + 6))) { //End of packet found. The expected packet length must be accurately calculated as voltage can include the packet footer 0x77, e.g. is 3447 which is 0x0d 0x77
       //TelnetPrint.printf("End of packet found: %X \r \n", incomingByte);
       packetbuff[packetCount] = incomingByte;
       packetCount++;
@@ -696,7 +711,7 @@ void receiveData() {
       packetStatus = 0;
       JBDSoftSerial.flush();
     }
-    else if (packetStatus == 2 || packetStatus == 3) {
+    else if (packetStatus == 2 || packetStatus == 3 || packetStatus == 4) {
       packetbuff[packetCount] = incomingByte;
       packetCount++;
     }
