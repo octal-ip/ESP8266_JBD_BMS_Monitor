@@ -22,14 +22,26 @@
       #define TFT_RST  -1    // Set TFT_RST to -1 if the display RESET is connected to NodeMCU RST or 3.3V
       #define SPI_FREQUENCY  40000000
       #define SPI_READ_FREQUENCY  20000000
+
+    Additionally, the below three variables should be asjusted to suit your battery.
+    This will allow the ring meters to render with the correct scale.
+
+    Example for a 16S high current battery:
+      int maxCurrent = 150;
+      int minVoltage = 45;
+      int maxVoltage = 58;
   */
+  int maxCurrent = 100;
+  int minVoltage = 45;
+  int maxVoltage = 58;
+
+  #include <SPI.h>
+  #include <TFT_eSPI.h>
   #define BLUE2RED 3
   #define GREEN2RED 4
   #define RED2GREEN 5
   #define BUFF_SIZE 64
   #define TFT_GREY 0x2104 // Dark grey 16 bit colour
-  #include <SPI.h>
-  #include <TFT_eSPI.h>
   TFT_eSPI tft = TFT_eSPI();
 #endif
 
@@ -62,7 +74,7 @@ byte avSamples = 240;
 byte systemCycles = 0;
 byte battCycles = 0;
 char post[70];
-char StatString[8];
+char StatString[8] = {0x0};
 unsigned long lastUnlock = 0;
 unsigned long lastRequest = 0;
 unsigned long connectTime = 0;
@@ -80,6 +92,8 @@ byte cells = 16; //Default to 16 cells. This will be automatically updated.
 byte cellCount = 0;
 float lowestCell = 0.0;
 float highestCell = 0.0;
+byte lowestCellNumber = 0;
+byte highestCellNumber = 0;
 float cellVoltageDelta = 0.0;
 float temps[4] = {0.0, 0.0, 0.0, 0.0};
 bool balancerOn = 0;
@@ -87,7 +101,7 @@ bool balancerOn = 0;
 #ifdef TFT_ENABLE
   //Record the last updates to the TFT screen to avoid updating the screen when no change has occurred. This improves speed and reduces flickering.
   float lastCurrent = 0.0, lastVoltage = 0.0, lastHighestCell = 0.0, lastLowestCell = 0.0, lastCellVoltageDelta = 0.0, lastTemp1 = 0.0, lastTemp2 = 0.0, lastPercentRem = 0.0;
-  int dischargeOverCurrent = 0, chargeOverCurrent = 0, cellUnderTemperature = 0, cellOverTemperature = 0, cellModuleUnderVolt = 0, cellModuleOverVolt = 0;
+  bool lastBalancerOn = 0;
 #endif
 
 RunningAverage currentAv(avSamples); //Average out the current readings as these can change rapidly between samples sent to InfluxDB. The other metrics change slowly, if at all.
@@ -146,9 +160,9 @@ void setup() {
     tft.setTextSize(1);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.drawString("Status:", 2, 170, 2);
-    tft.drawString("Highest Cell:", 2, 185, 2);
-    tft.drawString("Lowest Cell:", 2, 200, 2);
-    tft.drawString("Voltage Delta:", 2, 215, 2);
+    tft.drawString("High Cell:", 2, 185, 2);
+    tft.drawString("Low Cell:", 2, 200, 2);
+    tft.drawString("Delta V:", 2, 215, 2);
     tft.drawString("Power:", 180, 170, 2);
     tft.drawString("Temp1:", 180, 185, 2);
     tft.drawString("Temp2:", 180, 200, 2);
@@ -356,7 +370,7 @@ void setup() {
     return x + r;
   }
 
-  void updateTFT() {
+void updateTFT() {
     tft.setTextSize(1);
     tft.setTextPadding(82);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -368,26 +382,36 @@ void setup() {
       tft.drawString(post, 245, 170, 2);
     }
 
-    if (current != lastCurrent) {
-      ringMeter(abs(current), 0, 60, 4, 5, 76, "Amps", GREEN2RED); // Draw ring meter
+    if (current != lastCurrent || balancerOn != lastBalancerOn) {
+      ringMeter(abs(current), 0, maxCurrent, 4, 5, 76, "Amps", GREEN2RED); // Draw ring meter
       tft.setTextDatum(TL_DATUM);
       tft.setTextSize(1);
-      tft.setTextPadding(82);
+      tft.setTextPadding(100);
       tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      if (current > 0) {
-        tft.drawString("Charging", 97, 170, 2);
+      if (current > 0 && balancerOn == 0) {
+        tft.drawString("Charging", 68, 170, 2);
       }
-      else if (current < 0) {
-        tft.drawString("Discharging", 97, 170, 2);
+      else if (current > 0 && balancerOn == 1) {
+        tft.drawString("Charging (B)", 68, 170, 2);
       }
-      else if (current == 0) {
-        tft.drawString("Standby", 97, 170, 2);
+      else if (current < 0 && balancerOn == 0) {
+        tft.drawString("Discharging", 68, 170, 2);
+      }
+      else if (current < 0 && balancerOn == 1) {
+        tft.drawString("Discharging (B)", 68, 170, 2);
+      }
+      else if (current == 0 && balancerOn == 0) {
+        tft.drawString("Standby", 68, 170, 2);
+      }
+      else if (current == 0 && balancerOn == 1) {
+        tft.drawString("Standby (B)", 68, 170, 2);
       }
       lastCurrent = current;
+      lastBalancerOn = balancerOn;
     }
     
     if (voltage != lastVoltage) {
-      ringMeter(voltage, 40, 60, 167, 5, 76, "Volts", BLUE2RED); // Draw ring meter
+      ringMeter(voltage, minVoltage, maxVoltage, 167, 5, 76, "Volts", BLUE2RED); // Draw ring meter
       lastVoltage = voltage;
     }
 
@@ -397,17 +421,16 @@ void setup() {
     tft.setTextDatum(TL_DATUM);
 
     if (highestCell != lastHighestCell) {
-      //tft.drawFloat(highestCell, 3, 97, 185, 2);
       dtostrf(highestCell, 1, 3, StatString);
-      sprintf(post, "%sv", StatString);
-      tft.drawString(post, 97, 185, 2);
+      sprintf(post, "%d: %sv", highestCellNumber, StatString);
+      tft.drawString(post, 68, 185, 2);
       lastHighestCell = highestCell;
     }
 
     if (lowestCell != lastLowestCell) {
       dtostrf(lowestCell, 1, 3, StatString);
-      sprintf(post, "%sv", StatString);
-      tft.drawString(post, 97, 200, 2);
+      sprintf(post, "%d: %sv", lowestCellNumber, StatString);
+      tft.drawString(post, 68, 200, 2);
       lastLowestCell = lowestCell;
     }
 
@@ -612,12 +635,15 @@ void processPacket() //This function deciphers the BMS data.
         
         if (cellVoltages[i] < lowestCell) {
           lowestCell = cellVoltages[i];
+          lowestCellNumber = i + 1;
         }
         if (cellVoltages[i] > highestCell) {
           highestCell = cellVoltages[i];
+          highestCellNumber = i + 1;
         }
 
         TelnetPrint.printf("Cell %d: %0.3fv \r\n", (i+1), cellVoltages[i]);
+        TelnetPrint.printf("Lowest cell: %d  Highest cell: %d \r\n", lowestCellNumber, highestCellNumber);
 
         if (battCycles >= avSamples) { //If we have enough samples added to the running average, send the data to InfluxDB.
           dtostrf(cellVoltages[i], 1, 3, StatString);
@@ -660,7 +686,7 @@ void receiveData() {
   if (JBDSoftSerial.available()) {
     incomingByte = JBDSoftSerial.read();
 	
-	//Receiving data requires a state machine to track the start of packet, packet type, reception in progress and reception completed.
+	  //Receiving data requires a state machine to track the start of packet, packet type, reception in progress and reception completed.
     // packetStatus = 0 means we're waiting for the start of a packet to arrive.
     // packetStatus = 1 means that we've found what looks like a packet header, but need to confirm with the next byte.
     // packetStatus = 2 means we've received a data packet containing system parameters (e.g. high temperature cut-off)
@@ -764,11 +790,13 @@ void loop() {
     JBDSoftSerial.write(0xdd); JBDSoftSerial.write(0x5a); JBDSoftSerial.write(0x0); JBDSoftSerial.write(0x02); JBDSoftSerial.write(0x56); JBDSoftSerial.write(0x78); JBDSoftSerial.write(0xff); JBDSoftSerial.write(0x30); JBDSoftSerial.write(0x77);
     lastUnlock = millis();
 
-    if (highestCell >= 3.4){ //Turn the external balancer ON if the highest cell voltage is above x
+    if (highestCell >= 3.4 && balancerOn == 0){ //Turn the external balancer ON if the highest cell voltage is above x
       digitalWrite(BALANCER, 1);
+      balancerOn = 1;
     }
-    else if (highestCell < 3.35){ //Turn the external balancer OFF if the highest cell voltage is above
+    else if (highestCell < 3.35 && balancerOn == 1){ //Turn the external balancer OFF if the highest cell voltage is above
       digitalWrite(BALANCER, 0);
+      balancerOn = 0;
     }
   }
 
