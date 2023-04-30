@@ -69,6 +69,7 @@ SoftwareSerial JBDSoftSerial;
 byte failures = 0; //Automatically restart the ESP if too many failures occurr in a row.
 byte packetStatus = 0;
 byte packetCount = 0;
+byte packetLength = 0;
 byte incomingByte = 0;
 byte avSamples = 240;
 byte systemCycles = 0;
@@ -714,6 +715,7 @@ void receiveData() {
         }
         packetbuff[packetCount] = incomingByte;
         packetCount++;
+        packetLength = 100;
       }
       else {
         JBDSoftSerial.flush();
@@ -722,13 +724,13 @@ void receiveData() {
         //TelnetPrint.println(F("Not a status or parameter packet, ignoring."));
       }
     }
-    else if ((packetStatus == 2 && packetCount > 8) || (packetStatus == 3 && packetCount > 42) || (packetStatus == 4 && packetCount > (2 * cells + 6))) { //If more than the expected number of bytes have been received, we must have missed the last byte of the packet. Restart.
+    else if (packetCount > packetLength && (packetStatus == 2 || packetStatus == 3 || packetStatus == 4)) { //If more than the expected number of bytes have been received, we must have missed the last byte of the packet. Restart.
       JBDSoftSerial.flush();
       packetStatus = 0;
       packetCount = 0;
       TelnetPrint.println(F("Too many bytes received - resetting."));
     }
-    else if ((incomingByte == 0x77 && packetStatus == 2 && packetCount == 8) || (incomingByte == 0x77 && packetStatus == 3 && packetCount == 42) || (incomingByte == 0x77 && packetStatus == 4 && packetCount == (2 * cells + 6))) { //End of packet found. The expected packet length must be accurately calculated as voltage can include the packet footer 0x77, e.g. is 3447 which is 0x0d 0x77
+    else if (incomingByte == 0x77 && packetCount == packetLength && (packetStatus == 2 || packetStatus == 3 || packetStatus == 4)) { //End of packet found.
       //TelnetPrint.printf("End of packet found: %X \r \n", incomingByte);
       packetbuff[packetCount] = incomingByte;
       packetCount++;
@@ -740,6 +742,10 @@ void receiveData() {
     else if (packetStatus == 2 || packetStatus == 3 || packetStatus == 4) {
       packetbuff[packetCount] = incomingByte;
       packetCount++;
+      if (packetCount == 4) {
+        packetLength = incomingByte + 6; //The 4th byte indicates the expected packet length, minus the header, checksum and footer.
+        Serial1.print("Expected length of packet: "); Serial1.println(packetLength);
+      }
     }
   }
 }
